@@ -8,6 +8,8 @@
 #define ELTYPE uint8_t
 #define CHECKRANGE(i) (i >= 0 && i < buffsz)
 #define ZEROVAL 0
+#define max(a,b) (a>=b? a : b)
+#define min(a,b) (a<=b? a : b)
 
 // ----------------------------------------------------------------------
 
@@ -27,6 +29,7 @@ public:
 	bool setNext(const ELTYPE& el);
 	const size_t size() { return buffsz; }
 	bool empty() { return buffsz == 0; }
+  bool all_marked(const ELTYPE& value=ZEROVAL);
 	void resize(const size_t Qsize, const ELTYPE& fill=ZEROVAL);
 	ELTYPE* add(const ELTYPE& el);
 	bool advance();
@@ -52,6 +55,11 @@ protected:
 	
 private:
 	void create_buff(ELTYPE* _buff, const size_t Qsize, const ELTYPE& fill=ZEROVAL);
+  void shift_buffer(ELTYPE* _buff, ELTYPE* _from, const char _dir, 
+                    const size_t bufsize, const size_t _times=1, const ELTYPE& fill=ZEROVAL);
+  void move_buffer(ELTYPE* _buff, ELTYPE* _from, ELTYPE* _to);
+  void move_buffer(ELTYPE* _buff, const size_t index_from, const size_t index_to);
+  ELTYPE* insert_buffer(ELTYPE* _buff, const size_t bufsize, const ELTYPE& _new, ELTYPE* _existing, const char _mode='a');
 };
 
 // ----------------------------------------------------------------------
