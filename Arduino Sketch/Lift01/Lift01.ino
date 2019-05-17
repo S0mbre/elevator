@@ -1,8 +1,11 @@
 #include "elevator.h"
+#include <TMRpcm.h>
+#include <SD.h>
 #include <Servo.h>
 #include <L293.h>
 #include <LiquidCrystal.h>
 #include <EasyButton.h>
+#include <SPI.h>
 
 //**************************************************
 
@@ -59,6 +62,14 @@
 #define PIN_INT_FL2 19
 #define PIN_INT_FL3 21
 #define PIN_INT_FL4 20
+// пины MicroSD адаптера
+#define PIN_SD_MISO 24
+#define PIN_SD_MOSI 25
+#define PIN_SD_SCK 26
+#define PIN_SD_CS 27
+// аудиосигнал на усилитель
+#define PIN_AUDIO A3
+
 // прочие
 #define PIN_FLOOR_BTN A0
 #define PIN_FN1 36                    // функциональная (программируемая) кнопка 1
@@ -74,10 +85,19 @@ RH_ASK main_radio(2000, PIN_MAIN_RADIO_RX, PIN_MAIN_RADIO_TX, 0, false);
 AccelStepper elev_stepper(AccelStepper::DRIVER, PIN_MAINMOTOR_STEP, PIN_MAINMOTOR_DIR);
 Servo elev_servo;
 bool elev_servo_activated;
+bool audio_ok;
 ErrorCode elev_run_result;
 EasyButton btn_elev_up(PIN_MAN_CONTROL_UP, 35, false, false), btn_elev_down(PIN_MAN_CONTROL_DOWN, 35, false, false), 
            btn_doors_open(PIN_MAN_CONTROL_OPEN, 35, false, false), btn_doors_close(PIN_MAN_CONTROL_CLOSE, 35, false, false), btn_fn1(PIN_FN1, 35, false, false);
+TMRpcm audiodrv; 
            
+struct Audiofiles
+{
+  const char* Floor1 = "floor1.wav";
+  const char* Floor2 = "floor2.wav";
+  const char* Floor3 = "floor3.wav";
+  const char* Floor4 = "floor4.wav";
+} AUDIO_FILES;
 
 struct Lcd_chars
 {
@@ -170,9 +190,23 @@ byte floordoor_control(int fl, const char command)
   }
 }
 
-void audio_control(int file_no)
+void audio_control(const uint8_t _floor)
 {
-  // plays file
+  if(!audio_ok) return;
+  switch(_floor) {
+    case 1:
+      audiodrv.play(AUDIO_FILES.Floor1);
+      break;
+    case 2:
+      audiodrv.play(AUDIO_FILES.Floor2);
+      break;
+    case 3:
+      audiodrv.play(AUDIO_FILES.Floor3);
+      break;
+    case 4:
+      audiodrv.play(AUDIO_FILES.Floor4);
+      break;      
+  }
 }
 
 void elev_led_control(const bool led_on)
@@ -245,6 +279,14 @@ void init_stepper()
   elev_stepper.setSpeed(ELEV_MOTOR_SPEED);
   elev_stepper.setMaxSpeed(ELEV_MOTOR_MAXSPEED);
   elev_stepper.setAcceleration(ELEV_MOTOR_ACCEL);
+}
+
+void init_audio()
+{  
+  audiodrv.speakerPin = PIN_AUDIO;
+  audiodrv.setVolume(5); // 0...7  
+  audio_ok = SD.begin(PIN_SD_CS);
+  //audiodrv.CSPin = PIN_SD_CS;
 }
 
 void stepper_reset_position()
@@ -344,8 +386,7 @@ void on_elev_arrive(Elevator* elevator, const uint8_t _floor)
   // лифт на тормоз
   elev_brake_control(true);
   // сообщить о прибытии на этаж
-  audio_control(1); // заглушка: реализовать!
-  
+  audio_control(_floor);   
   // открыть дверь (сразу если нажата кнопка ручного открытия)
   btn_doors_open.read();
   elevator->open_door(btn_doors_open.wasPressed());
@@ -390,6 +431,7 @@ void setup()
   init_interrupts();
   init_stepper();
   init_lcd();
+  init_audio();
 
   btn_fn1.onPressed(stepper_reset_position);
 

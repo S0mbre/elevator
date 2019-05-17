@@ -1,11 +1,12 @@
 #include "elevq.h"
 
+using namespace Elevatorns;
 // ----------------------------------------------------------------------
 
 Elevq::Elevq(const size_t Qsize, const ELTYPE& fill) :
 	buffsz(Qsize), buff(0), current_el(0), next_el(0), last_direction('s')
 {
-	create_buff(buff, Qsize, fill);
+	if(Qsize) create_buff(buff, Qsize, fill);
 }
 
 // ----------------------------------------------------------------------
@@ -47,7 +48,7 @@ bool Elevq::setNext(const ELTYPE& el)
 void Elevq::update_direction()
 {
   last_direction = 's'; 
-  if(!current_el || !next_el) return;
+  if(!current_el || !next_el || *next_el == ZEROVAL) return;
   
   long d = current_el - *next_el;  
   if(d>0) last_direction = 'd';
@@ -62,7 +63,7 @@ ELTYPE* Elevq::add(const ELTYPE& el)
  
 	if(empty()) {
     buff[0] = el;
-    next_el = &buff[0];
+    next_el = buff;
     update_direction();
     return next_el;
 	}
@@ -91,14 +92,21 @@ bool Elevq::set(const ELTYPE& el, const ELTYPE& value)
 
 // ----------------------------------------------------------------------
 
+void Elevq::clear(const ELTYPE& value)
+{
+  if(buff && buffsz) for(ELTYPE* p=buff; p<(buff+buffsz); ++p) *p = value;
+}
+
+// ----------------------------------------------------------------------
+
 bool Elevq::advance()
 {
 	if(!buff) return false;
-	if(!current_el) current_el = &buff[0];
+	if(!current_el) current_el = buff;
 	*current_el = ZEROVAL;
 	resort();
-	next_el = &buff[0];
-	return *next_el != ZEROVAL;
+	next_el = buff;
+	return last_direction != 's';
 }
 
 // ----------------------------------------------------------------------
@@ -108,96 +116,6 @@ ELTYPE* Elevq::find(const ELTYPE& el)
 	for(ELTYPE* p=buff; p<(buff+buffsz); ++p)
 		if(*p == el) return p;
 	return 0;
-}
-
-// ----------------------------------------------------------------------
-
-void Elevq::shift_buffer(ELTYPE* _buff, ELTYPE* _from, const char _dir, 
-                  const size_t bufsize, const size_t _times, const ELTYPE& fill)
-{
-  if(_dir == 'u') {     // shift up
-    size_t _maxtimes = min( (bufsize*sizeof(ELTYPE) - _from)/sizeof(ELTYPE), _times);
-    for(size_t i=0; i<_maxtimes; i++) {
-      for(ELTYPE* p=(_buff+bufsize-1); p!=_from; --p) *p = *(p-1);
-      *_from = fill;
-    }
-  }
-  else if(_dir == 'd') {     // shift up
-    size_t _maxtimes = min( _from/sizeof(ELTYPE), _times);
-    for(size_t i=0; i<_maxtimes; i++) {
-      for(ELTYPE* p=_buff; p!=_from; ++p) *p = *(p+1);
-      *_from = fill;
-    }
-  }
-}
-
-// ----------------------------------------------------------------------
-
-void Elevq::move_buffer(ELTYPE* _buff, ELTYPE* _from, ELTYPE* _to)
-{
-  size_t diff = _from - _to;
-  if(!diff) return;
-  ELTYPE fr = *_from;
-  if(diff < 0) for(ELTYPE* p=_from, p!=_to; ++p) *p = *(p+1);
-  else for(ELTYPE* p=_from, p!=_to; --p) *p = *(p-1);    
-  *_to = fr;
-}
-
-// ----------------------------------------------------------------------
-
-void Elevq::move_buffer(ELTYPE* _buff, const size_t index_from, const size_t index_to)
-{
-  // !!! No range check !!!
-  move_buffer(_buff, &_buff[index_from], &_buff[index_to]);
-}
-
-// ----------------------------------------------------------------------
-
-ELTYPE* Elevq::insert_buffer(ELTYPE* _buff, const size_t bufsize, const ELTYPE& _new, 
-                             ELTYPE* _existing, const char _mode)
-{
-  if(_mode == 'a' && _existing>=(_buff+bufsize-1))
-    return 0; // can't insert after last
-
-  if(_mode == 'a') {
-    move_buffer(_buff, _buff + bufsize - 1, _existing + 1);
-    *(_existing + 1) = _new;
-  }
-  else if(_mode == 'b') {
-    move_buffer(_buff, _existing, _existing + 1);
-    *_existing = _new;
-  }
-}
-
-// ----------------------------------------------------------------------
-
-ELTYPE* Elevq::add_after(const ELTYPE& el, const ELTYPE& el_after)
-{
-	ELTYPE* found_el_after = find(el_after);
-	if(!found_el_after) return 0;
-	
-	ELTYPE* found_el = find(el);
-	if(found_el) {
-		*found_el = ZEROVAL;
-		resort();
-		return add_after(el, el_after);
-	}
-	
-	if(buffsz < 2 || *last() != ZEROVAL) return 0;
-	
-	for(ELTYPE* p=(buff+buffsz-1); p!=found_el_after; --p) 
-		*p = *(p-1);
-	*(found_el_after + 1) = el;
-	resort();
-	return find(el);
-}
-
-// ----------------------------------------------------------------------
-
-ELTYPE* Elevq::add_afteri(const ELTYPE& el, const size_t index_after)
-{
-	if(index_after >= (buffsz - 1)) return 0;
-	return add_after(buff[index_after]);
 }
 
 // ----------------------------------------------------------------------
@@ -244,17 +162,92 @@ void Elevq::resort()
   ELTYPE* _buff;
   create_buff(_buff, buffsz);
 
-  if(last_direction == 'u') {
-    
-    for(size_t i=0, j=0; i<buffsz; i++) {  
-      if(buff[i] < current_el) continue;  
-      if(_buff[j] == ZEROVAL) _buff[j] = buff[i];
-      else if(_buff[j] < buff[i]) 
-      
-      
-      
+  size_t j = 0;
+  for(size_t i=0; i<buffsz; i++) {
+    if(buff[i] == current_el) {
+      _buff[j] = buff[i];
+      j++;
+      break;
     }
+  }  
+
+  if(last_direction == 'u') {
+
+    // copy floors > current floor and sort them ascending    
+    for(size_t i=0; i<buffsz; i++) {  
+      if(buff[i] > current_el) {
+        _buff[j] = buff[i]; 
+        j++;
+      }  
+    }
+    qs(_buff, 0, j-1, '^');
+    
+    // copy floors < current floor and sort them descending
+    size_t k = j - 1;
+    for(size_t i=0; i<buffsz; i++) {  
+      if(buff[i] < current_el) {
+        _buff[j] = buff[i]; 
+        j++;
+      }  
+    }
+    qs(_buff, k, j-1, 'v');
 
   }
- 
+
+  else if(last_direction == 'd') {
+
+    // copy floors < current floor and sort them descending    
+    for(size_t i=0; i<buffsz; i++) {  
+      if(buff[i] < current_el) {
+        _buff[j] = buff[i]; 
+        j++;
+      }  
+    }
+    qs(_buff, 0, j-1, 'v');
+
+    // copy floors > current floor and sort them ascending
+    size_t k = j - 1;
+    for(size_t i=0; i<buffsz; i++) {  
+      if(buff[i] > current_el) {
+        _buff[j] = buff[i]; 
+        j++;
+      }  
+    }
+    qs(_buff, k, j-1, '^');
+    
+  }
+
+  // replace buff
+  free(buff);
+  buff = _buff;
+
+  next_el = buff;
+
+  update_direction(); 
+}
+
+// ----------------------------------------------------------------------
+
+void Elevq::qs(ELTYPE* _buff, size_t _from, size_t _to, const char _mode)
+{
+    // Quick sort. No range check!!!
+    
+    if (_from >= _to) return;
+    
+    ELTYPE left = _from, right = _to, middle = _buff[(left + right) / 2];
+    do
+    {
+        while (_buff[left] < middle) left++;
+        while (_buff[right] > middle) right--;
+        if( (_mode=='^' && left <= right) || (_mode=='v' && left >= right) )
+        {
+            ELTYPE tmp = _buff[left];
+            _buff[left] = _buff[right];
+            _buff[right] = tmp;
+            left++;
+            right--;
+        }
+    } while (left <= right);
+    qs(_buff, _from, right, _mode);
+    qs(_buff, left, _to, _mode);    
 }

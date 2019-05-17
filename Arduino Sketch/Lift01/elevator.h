@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <AccelStepper.h>
+#include "elevq.h"
 
 // ----------------------------------------------------------------------
 namespace Elevatorns {
@@ -150,36 +151,26 @@ public:
 protected:
 	AccelStepper* _motor;
 	ElevatorEvents _events;
-
+  Elevq* _floorq; 
+  
   volatile bool _is_running;
 	uint8_t _num_floors;                        // number of floors
-	volatile uint8_t _curr_floor;               // floor where elevator is at
-	uint8_t* _floorq;                           // floors visiting queue
-	volatile uint8_t* _next_floor;              // pointer to next target floor in queue
 	volatile Mode _mode;                        // elevator function mode
-	volatile Direction _dir;
   volatile long _floor_position;
 	long _door_delay;
   long _floor_delay;
 	long* _floor_positions;                     // reference floor positions (e.g. in motor steps)
-	long _floor_position_tolerance;             // floor position tolerance (e.g. in motor steps)
   volatile bool _suspended;
-  void optimize_queue();                      // optimize floor queue to honor elevator logic
   ErrorCode move(const long steps, ElevatorEvent on_run, ElevatorEvent on_stop);
 
   inline void freemem() 
   { 
-    if(_floorq) { free(_floorq); _floorq = 0; } 
+    if(_floorq) { _floorq->~Elevq(); free(_floorq); _floorq = 0; } 
     if(_floor_positions) { free(_floor_positions); _floor_positions = 0; } 
     _next_floor = 0;
   }
 
 private:
-  void queue_advance();                       // mark reached floor (=0) and move _next_floor ptr to next in queue
-  uint8_t* get_floor_in_q(const uint8_t _floor);
-  int8_t get_floor_index_in_q(const uint8_t _floor);
-  const bool q_empty();
-
   inline bool Success(const ErrorCode& result) { return result == ErrorCode::E_OK; } 
 };
 

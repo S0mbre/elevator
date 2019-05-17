@@ -12,6 +12,8 @@
 #define min(a,b) (a<=b? a : b)
 
 // ----------------------------------------------------------------------
+namespace Elevatorns {
+// ----------------------------------------------------------------------
 
 class Elevq
 {
@@ -19,7 +21,7 @@ public:
 	Elevq(const size_t Qsize=0, const ELTYPE& fill=ZEROVAL);
 	~Elevq() { if(buff) free(buff); }
 	
-public:
+public:  
 	ELTYPE* get(const size_t index) { return CHECKRANGE(index)? &buff[index] : 0; }
 	bool set(const ELTYPE& el, const ELTYPE& value=ZEROVAL);
 	ELTYPE* first() { return get(0); }
@@ -32,16 +34,17 @@ public:
   bool all_marked(const ELTYPE& value=ZEROVAL);
 	void resize(const size_t Qsize, const ELTYPE& fill=ZEROVAL);
 	ELTYPE* add(const ELTYPE& el);
+  bool remove(const ELTYPE& el) { return set(el); }
 	bool advance();
 	bool has(const ELTYPE& el) { return find(el); }
 	ELTYPE* find(const ELTYPE& el);
+  const char getDirection() { return last_direction; }
+  void clear(const ELTYPE& value=ZEROVAL);
 
 public:
   volatile ELTYPE current_el;
 	
 protected:
-	ELTYPE* add_after(const ELTYPE& el, const ELTYPE& el_after);
-	ELTYPE* add_afteri(const ELTYPE& el, const size_t index_after);
 	bool indexof(const ELTYPE& el, size_t& index);
 	void resort();
 	ELTYPE* find_empty();
@@ -55,13 +58,10 @@ protected:
 	
 private:
 	void create_buff(ELTYPE* _buff, const size_t Qsize, const ELTYPE& fill=ZEROVAL);
-  void shift_buffer(ELTYPE* _buff, ELTYPE* _from, const char _dir, 
-                    const size_t bufsize, const size_t _times=1, const ELTYPE& fill=ZEROVAL);
-  void move_buffer(ELTYPE* _buff, ELTYPE* _from, ELTYPE* _to);
-  void move_buffer(ELTYPE* _buff, const size_t index_from, const size_t index_to);
-  ELTYPE* insert_buffer(ELTYPE* _buff, const size_t bufsize, const ELTYPE& _new, ELTYPE* _existing, const char _mode='a');
+  void qs(ELTYPE* _buff, size_t _from, size_t _to, const char _mode='^');
 };
 
 // ----------------------------------------------------------------------
+} // Elevatorns
 
 #endif

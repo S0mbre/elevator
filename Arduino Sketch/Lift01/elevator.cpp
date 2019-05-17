@@ -7,9 +7,9 @@ using namespace Elevatorns;
 // ----------------------------------------------------------------------
 
 Elevator::Elevator(uint8_t floors, AccelStepper* elev_motor_driver, const ElevatorEvents& events) :
-	_floorq(0), _next_floor(0), _floor_positions(0), _num_floors(0), _floor_position(0),
-	_motor(elev_motor_driver), _curr_floor(0), _mode(Mode::AUTO), _dir(Direction::NA), 
-	_door_delay(1000), _floor_position_tolerance(5), _suspended(false), _events(events), _is_running(false)
+	_floorq(0), _floor_positions(0), _num_floors(0), _floor_position(0),
+	_motor(elev_motor_driver), _curr_floor(0), _mode(Mode::AUTO),  
+	_door_delay(1000), _suspended(false), _events(events), _is_running(false)
 {
 	set_floor_count(floors);
 }
@@ -27,14 +27,13 @@ void Elevator::set_floor_count(uint8_t num_floors)
 	if(num_floors > MAX_NUM_FLOORS) num_floors = MAX_NUM_FLOORS;
 	// initialize queue size
 	freemem();
-	_floorq = (uint8_t*) malloc(num_floors * sizeof(uint8_t));
-	memset(_floorq, 0, sizeof(_floorq));
-  clear_queue();
+	_floorq = &Elevq(num_floors);
   
 	// floor positions
 	_floor_positions = (long*) malloc(num_floors * sizeof(long));
 	long* last_el = _floor_positions + num_floors - 1;
 	for(long* pt=_floor_positions; pt<=last_el; ++pt) *pt = -1L;
+  
 	_num_floors = num_floors;
 }
 
@@ -54,6 +53,8 @@ ErrorCode Elevator::add_target(uint8_t target_floor)
    * Adds a next target floor to the elevator queue, resorting
    * the queue if necessary to achieve the efficient elevator logic.
    */
+   if(!_floorq) return ErrorCode::E_UNKNOWN;
+   
    if(target_floor < 1 || target_floor > _num_floors)
     return ErrorCode::E_OUT_OF_RANGE;
    
