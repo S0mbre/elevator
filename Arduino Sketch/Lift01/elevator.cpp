@@ -8,7 +8,7 @@ using namespace Elevatorns;
 
 Elevator::Elevator(uint8_t floors, AccelStepper* elev_motor_driver, const ElevatorEvents& events) :
 	_floorq(0), _floor_positions(0), _num_floors(0), _floor_position(0),
-	_motor(elev_motor_driver), _curr_floor(0), _mode(Mode::AUTO),  
+	_motor(elev_motor_driver), _mode(Mode::AUTO),  
 	_door_delay(1000), _suspended(false), _events(events), _is_running(false)
 {
 	set_floor_count(floors);
@@ -47,6 +47,17 @@ void Elevator::set_floor_position(uint8_t target_floor, const long position)
 
 // ----------------------------------------------------------------------
 
+void Elevator::set_floor_positions(const long* const positions)
+{
+  if(sizeof(positions) < (sizeof(long*) * _num_floors))
+    return;
+    
+  for(size_t i=0; i<_num_floors; i++)
+    _floor_positions[i] = positions[i];    
+}
+
+// ----------------------------------------------------------------------
+
 ErrorCode Elevator::add_target(uint8_t target_floor)
 {
   /*
@@ -58,31 +69,30 @@ ErrorCode Elevator::add_target(uint8_t target_floor)
    if(target_floor < 1 || target_floor > _num_floors)
     return ErrorCode::E_OUT_OF_RANGE;
    
-   uint8_t* pFloor = get_floor_in_q(target_floor);
-   if(pFloor) // floor already in queue
-    return ErrorCode::E_Q_HAS_DUPLICATE;
-      
-   // find first vacant pos in queue
-   pFloor = get_floor_in_q(0);
-   if(!pFloor) // queue full, cannot add anything
-    return ErrorCode::E_Q_FULL;
-   
-   // fill that vacant cell
-   *pFloor = target_floor;
-
-   // resort
-   optimize_queue();
+   if(!_floorq->add(target_floor)) return ErrorCode::E_Q_FULL;
 
    if(_events.OnAdd) _events.OnAdd(this, target_floor);
 
    // run
-   if(!_is_running) run();
+   if(!_is_running || _floorq->getDirection() == Direction::STOP) run();
+
+   return ErrorCode::E_OK;
+}
+
+// ----------------------------------------------------------------------
+
+ErrorCode Elevator::remove_target(uint8_t target_floor)
+{
+  if(!_floorq) return ErrorCode::E_UNKNOWN;
+  if(!_floorq->remove(target_floor)) return ErrorCode::E_FLOOR_NOT_FOUND;
+  if(_events.OnRemove) _events.OnRemove(this, target_floor);
 }
 
 // ----------------------------------------------------------------------
 
 ErrorCode Elevator::move_to()
 {
+  const uint8_t* _next_floor = next_floor_ptr();
   if(_next_floor) return move_to(*_next_floor);
   return ErrorCode::E_Q_NEXTTARGET_EMPTY;
 }
@@ -94,7 +104,7 @@ ErrorCode Elevator::move_to(uint8_t target_floor)
 	if(!_motor) return ErrorCode::E_NO_DRIVER;
 	if(target_floor < 1 || target_floor > _num_floors) return ErrorCode::E_OUT_OF_RANGE;
   if((uint8_t)_mode > 1) return ErrorCode::E_WRONG_MODE; 
-  if(_floor_positions[target_floor - 1] == -1) return ErrorCode::E_FLOOR_POS_UNASSIGNED;
+  if(_floor_positions[target_floor - 1] < 0) return ErrorCode::E_FLOOR_POS_UNASSIGNED; // todo: check that all floor positions > 0!
 	_motor->moveTo(_floor_positions[target_floor - 1]);
   return ErrorCode::E_OK;
 }
@@ -136,27 +146,24 @@ ErrorCode Elevator::move_to(float abs_position, ElevatorEvent on_run, ElevatorEv
 
 ErrorCode Elevator::move(const long steps, ElevatorEvent on_run, ElevatorEvent on_stop)
 {
+  if(!_floorq) return ErrorCode::E_UNKNOWN;
   if(!steps) return ErrorCode::E_OK;
   if((uint8_t)_mode > 1) return ErrorCode::E_WRONG_MODE;  
   if(_mode != Mode::MANUAL) set_current_mode(Mode::MANUAL);
   
   _motor->move(steps);
-  _dir = steps<0? Direction::UP : Direction::DOWN;
+  _floorq->setDirection(steps<0? Direction::UP : Direction::DOWN);
   
   while(_motor->runSpeed() && !_suspended) {
     _floor_position = _motor->currentPosition();
     if(on_run) {      
-      bool result = on_run(this);
-      if(!result) {
-        _motor->stop(); 
-        _dir = Direction::STOP;
-        if(on_stop) on_stop(this);
-        return ErrorCode::E_OK;
-      }
+      if(!on_run(this)) break;
     }
     //delay(Elevator::STEP_DELAY);
   }
-  _dir = Direction::STOP;
+  
+  _motor->stop();
+  _floorq->setDirection(Direction::STOP);
   if(on_stop) on_stop(this);
   return ErrorCode::E_OK;  
 }
@@ -206,18 +213,20 @@ ErrorCode Elevator::run()
 {
   if(!_motor) return ErrorCode::E_NO_DRIVER;
   if(_mode != Mode::AUTO) return ErrorCode::E_WRONG_MODE;
+  if(!_floorq) return ErrorCode::E_UNKNOWN;
+  
   bool running = false;
   ErrorCode move_result;
-  optimize_queue();
+  _floorq->resort(); // todo: check if needed!
 
   _is_running = true;
+  uint8_t* _next_floor = next_floor_ptr();
   
   while(_mode == Mode::AUTO && _next_floor && !_suspended) {
    
     move_result = move_to();
 
     if(move_result==ErrorCode::E_OUT_OF_RANGE) {
-      _next_floor = 0;
       break;  
     }
     else if(!Success(move_result)) {
@@ -232,28 +241,28 @@ ErrorCode Elevator::run()
          break;    
       }
       running = _motor->run();    
-      update_current_values();
+      update_current_floor();
   
       if(!running) {
         // motor has stopped
-        _dir = Direction::STOP;
-        if(_curr_floor == *_next_floor) {
+        _floorq->setDirection(Direction::STOP);  // todo: check if needed
+        if(_floorq->current() == *_next_floor) {
           // landed at next target_pos
-          if(_events.OnArrive) _events.OnArrive(this, _curr_floor);
-          queue_advance();
+          if(_events.OnArrive) _events.OnArrive(this, _floorq->current());          
+          if(_events.OnRemove) _events.OnRemove(this, *_next_floor);
+          _floorq->advance();
         }
         break; // exit inner loop on motor stop
       }
-      else {
-        // running to next target
-        if(_events.OnRun) _suspended = !_events.OnRun(this);      // update suspended status from callback
-      }
+      
+      // running to next target
+      if(_events.OnRun) _suspended = !_events.OnRun(this);      // update suspended status from callback      
       
       // motor step delay
       delay(Elevator::STEP_DELAY);      
     }
     
-    optimize_queue();
+    _next_floor = next_floor_ptr();
   }
 
   if(!_next_floor && _events.OnEmptyQueue) _events.OnEmptyQueue(this);
@@ -263,33 +272,11 @@ ErrorCode Elevator::run()
   return ErrorCode::E_OK;
 }
 
-
-// ----------------------------------------------------------------------
-
-void Elevator::queue_advance()
-{
-  *_next_floor = 0;
-  uint8_t _index = (_next_floor - _floorq)/sizeof(uint8_t*);
-  if(_index < (_num_floors-1)) _next_floor++;
-  else _next_floor = _floorq;
-  optimize_queue();
-}
-
-// ----------------------------------------------------------------------
-
-void Elevator::remove_target(uint8_t target_floor)
-{
-  uint8_t* pInq = get_floor_in_q(target_floor);
-  if(pInq) *pInq = 0;
-  optimize_queue();  
-}
-
 // ----------------------------------------------------------------------
 
 void Elevator::clear_queue()
 {
-  for(uint8_t* p=_floorq; p<=(_floorq+_num_floors-1); ++p) *p = 0;  
-  _next_floor = 0;
+  if(_floorq) _floorq->clear();
 }
 
 // ----------------------------------------------------------------------
@@ -307,7 +294,7 @@ ErrorCode Elevator::open_door(uint8_t target_floor, bool immediate)
 
 ErrorCode Elevator::open_door(bool immediate)
 {
-  return open_door(_curr_floor, immediate);
+  return open_door(current_floor(), immediate);
 }
 
 // ----------------------------------------------------------------------
@@ -325,7 +312,7 @@ ErrorCode Elevator::close_door(uint8_t target_floor, bool immediate)
 
 ErrorCode Elevator::close_door(bool immediate)
 {
-  return close_door(_curr_floor, immediate);
+  return close_door(current_floor(), immediate);
 }
 
 // ----------------------------------------------------------------------
@@ -367,7 +354,7 @@ ErrorCode Elevator::get_door_state(uint8_t target_floor, byte& door_state)
 
 ErrorCode Elevator::update_current_floor()
 {
-  _curr_floor = 0;
+  uint8_t _curr_floor = 0;
   if(!_motor) return ErrorCode::E_NO_DRIVER;
   _floor_position = _motor->currentPosition();
   for(uint8_t i=_num_floors; i>0; --i) {
@@ -376,25 +363,8 @@ ErrorCode Elevator::update_current_floor()
       break;
     }
   }
+  if(_floorq) _floorq->current() = _curr_floor;
   return ErrorCode::E_OK;
-}
-
-// ----------------------------------------------------------------------
-
-ErrorCode Elevator::update_current_directon()
-{
-  _dir = Direction::NA;
-  if(!_motor) return ErrorCode::E_NO_DRIVER;
-  if(!_motor->isRunning()) _dir = Direction::STOP;
-  else _dir = _motor->distanceToGo() > 0? Direction::DOWN : Direction::UP;
-  return ErrorCode::E_OK;
-}
-
-// ----------------------------------------------------------------------
-
-ErrorCode Elevator::update_current_values()
-{
-  return max(update_current_floor(), update_current_directon());
 }
 
 // ----------------------------------------------------------------------
@@ -436,77 +406,4 @@ void Elevator::set_current_mode(const Mode elev_mode)
       break;
   }
   
-}
-
-// ----------------------------------------------------------------------
-
-uint8_t* Elevator::get_floor_in_q(const uint8_t _floor)
-{
-  if(_floorq && _floor > 0 && _floor <= _num_floors)
-    for(uint8_t* p=_floorq; p<=(_floorq+_num_floors-1); ++p) {
-      if(*p==_floor) return p;
-    }
-  return 0;
-}
-
-// ----------------------------------------------------------------------
-
-int8_t Elevator::get_floor_index_in_q(const uint8_t _floor)
-{
-  if(_floorq && _floor > 0 && _floor <= _num_floors)
-    for(size_t i=0; i<_num_floors; i++) {
-      if(_floorq[i] == _floor) return (int8_t)i;
-    }
-  return -1;
-}
-
-// ----------------------------------------------------------------------
-
-const bool Elevator::q_empty()
-{
-  for(uint8_t* p=_floorq; p<=(_floorq+_num_floors-1); ++p)
-    if(*p) return false;
-  return true;
-}
-
-// ----------------------------------------------------------------------
-
-void Elevator::optimize_queue()
-{
-  /*
-   * Reshuffles internal floor queue (_floorq) and updates next floor pointer (_next_floor)
-   * to reflect the elevator logic.
-   */
-   
-   if(!_next_floor) { // case 1 - next target is not set
-    
-    ; 
-   }
-   
-   else { // case 2 - next target is set
-    
-    // determine preferable movement direction (where's next target with reference to current floor)
-    uint8_t fl_offset = *_next_floor - _curr_floor;
-    if(fl_offset > 0) { // going up
-      
-    }
-    else if(fl_offset < 0) { // going down
-      
-    }
-    else { // next = current
-      if(_events.OnArrive) _events.OnArrive(this, _curr_floor);
-      queue_advance(); // could this lead to infinite recursion?  
-    }
-    
-   }
-}
-
-// ----------------------------------------------------------------------
-
-const uint8_t Elevator::floors_to_visit()
-{
-  uint8_t counter = 0;
-  for(uint8_t* p=_floorq; p<=(_floorq+_num_floors-1); ++p)
-    if(*p) counter++;
-  return counter;
 }

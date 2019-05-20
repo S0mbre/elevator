@@ -12,8 +12,7 @@ namespace Elevatorns {
 class Elevator;
 
 enum ErrorCode : uint8_t {E_OK, E_UNKNOWN, E_OUT_OF_RANGE, E_Q_FULL, E_Q_HAS_DUPLICATE, E_Q_NEXTTARGET_EMPTY, E_NO_FLOORS, 
-                          E_NO_DRIVER, E_WRONG_MODE, E_NO_EVENT_ASSIGNED, E_FLOOR_POS_UNASSIGNED};
-enum Direction : uint8_t {UP, DOWN, STOP, NA};
+                          E_NO_DRIVER, E_WRONG_MODE, E_NO_EVENT_ASSIGNED, E_FLOOR_POS_UNASSIGNED, E_FLOOR_NOT_FOUND};
 enum Mode : uint8_t {AUTO, MANUAL, OFF, MALFUNC};
 
 typedef bool (*ElevatorEvent)(Elevator* object);
@@ -58,7 +57,7 @@ public:
     }
     return "N/A";
   }
-
+  
   static const char* Mode_2str(const Mode& _mode)
   {
     switch(_mode) {
@@ -69,7 +68,7 @@ public:
     }
     return "N/A";  
   }
-
+  
   static const char* Error_2str(const ErrorCode& _error)
   {
     switch(_error) {
@@ -83,6 +82,7 @@ public:
       case ErrorCode::E_WRONG_MODE: return "Wrong elevator operation mode";
       case ErrorCode::E_NO_EVENT_ASSIGNED: return "This operation is not associated with corresponding event handler (function pointer empty)";
       case ErrorCode::E_FLOOR_POS_UNASSIGNED: return "Floor position(s) not assigned";
+      case ErrorCode::E_FLOOR_NOT_FOUND: return "No such floor found in queue";
     }
     return "Unknown error";  
   }
@@ -93,26 +93,24 @@ public:
 
   ErrorCode move_to();                             // move to next floor in queue
 	ErrorCode move_to(uint8_t target_floor);			    // move to specified floor
-	ErrorCode move_to(float abs_position, ElevatorEvent on_run, ElevatorEvent on_stop);			   // move to absolute position in manual mode (see abs_position()) -- BLOCKING!
-  ErrorCode move_up(ElevatorEvent on_run, ElevatorEvent on_stop);            // move upwards slowly in manual mode -- BLOCKING!
-  ErrorCode move_down(ElevatorEvent on_run, ElevatorEvent on_stop);          // move downwards slowly in manual mode -- BLOCKING!  
+	ErrorCode move_to(float abs_position, ElevatorEvent on_run, ElevatorEvent on_stop);			   // move to absolute position in manual mode (see abs_position()) -- BLOCKING! ONLY IN MANUAL MODE
+  ErrorCode move_up(ElevatorEvent on_run, ElevatorEvent on_stop);            // move upwards -- BLOCKING! ONLY IN MANUAL MODE
+  ErrorCode move_down(ElevatorEvent on_run, ElevatorEvent on_stop);          // move downwards -- BLOCKING! ONLY IN MANUAL MODE
 	void suspend();								              // suspend operation (queue remains filled)
   void resume();                              // resume operation (after suspension)
 	ErrorCode run();		                        // run current queue (in AUTO mode)
 	ErrorCode add_target(uint8_t target_floor);	// add target floor to queue (honoring elev logic)
-  void remove_target(uint8_t target_floor);
+  ErrorCode remove_target(uint8_t target_floor); 
 	void clear_queue();							            // clear queue and stop after current job
 	void move_to_closest();						          // stop at closest floor as to current position (if between floors)
-	ErrorCode open_door(bool immediate=false);							        // open door at current floor
-	ErrorCode open_door(uint8_t target_floor, bool immediate=false);	// open door at specified floor
-	ErrorCode close_door(bool immediate=false);							        // close door at current floor
-	ErrorCode close_door(uint8_t target_floor, bool immediate=false);	// close door at specified floor
+	ErrorCode open_door(bool immediate);							        // open door at current floor
+	ErrorCode open_door(uint8_t target_floor, bool immediate);	// open door at specified floor
+	ErrorCode close_door(bool immediate);							        // close door at current floor
+	ErrorCode close_door(uint8_t target_floor, bool immediate);	// close door at specified floor
 	ErrorCode open_all_dooors();						    // open all floor doors
 	ErrorCode close_all_dooors();					      // close all floor doors
   ErrorCode get_door_state(uint8_t target_floor, byte& door_state); // get state of a specific door (open==1/closed==0) 
   ErrorCode update_current_floor();           // update current floor and absolute position in steps
-  ErrorCode update_current_directon();        // update current direction
-  ErrorCode update_current_values();          // update all current values (floor, position and direction)
   	
   //--- properties ---
 
@@ -123,9 +121,9 @@ public:
   const Mode current_mode() { return _mode; }
   void set_current_mode(const Mode elev_mode=Mode::AUTO);          
     // elevator status / direction
-  const Direction current_direction() { return _dir; }
+  const Direction current_direction() { return _floorq? _floorq->getDirection() : Direction::NA; }
     // current floor
-  const uint8_t current_floor() { return _curr_floor; }
+  const uint8_t current_floor() { return _floorq? _floorq->current() : 0; }
     // current position (in steps)
   const long current_pos() { return _floor_position; }
   void set_current_pos(const long pos);
@@ -138,10 +136,11 @@ public:
   const long floor_delay() { return _floor_delay; }
   void set_floor_delay(const long _delay=5000) { _floor_delay = (_delay > 0 && _delay < MAX_FLOOR_DELAY)? _delay : 5000; }
     // next floor
-  const uint8_t next_floor() { return _next_floor? *_next_floor : 0; }
+  const uint8_t next_floor() { return _floorq? (_floorq->next()? *(_floorq->next()) : 0) : 0; }
     // any floor position (in steps)
   const long floor_position(uint8_t target_floor) { return _floor_positions[target_floor-1]; }  
   void set_floor_position(uint8_t target_floor, const long position);  // sets reference position for specified floor (e.g. in motor steps)
+  void set_floor_positions(const long* const positions);               // same as above, but assigns in a batch mode from array
 	  // number of floors still to visit before idle
   const uint8_t floors_to_visit();
     // check idle status
@@ -149,7 +148,7 @@ public:
   const bool is_running() { return _is_running; } 
 	
 protected:
-	AccelStepper* _motor;
+	AccelStepper* _motor;                       // not owned!!! don't free from this class objects
 	ElevatorEvents _events;
   Elevq* _floorq; 
   
@@ -161,17 +160,17 @@ protected:
   long _floor_delay;
 	long* _floor_positions;                     // reference floor positions (e.g. in motor steps)
   volatile bool _suspended;
-  ErrorCode move(const long steps, ElevatorEvent on_run, ElevatorEvent on_stop);
+  ErrorCode move(const long steps, ElevatorEvent on_run, ElevatorEvent on_stop); // move N steps in either direction -- BLOCKING! ONLY IN MANUAL MODE
 
   inline void freemem() 
   { 
     if(_floorq) { _floorq->~Elevq(); free(_floorq); _floorq = 0; } 
     if(_floor_positions) { free(_floor_positions); _floor_positions = 0; } 
-    _next_floor = 0;
   }
 
 private:
   inline bool Success(const ErrorCode& result) { return result == ErrorCode::E_OK; } 
+  const uint8_t* next_floor_ptr() { return _floorq? _floorq->next() : 0; }
 };
 
 // ----------------------------------------------------------------------

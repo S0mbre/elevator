@@ -4,7 +4,7 @@ using namespace Elevatorns;
 // ----------------------------------------------------------------------
 
 Elevq::Elevq(const size_t Qsize, const ELTYPE& fill) :
-	buffsz(Qsize), buff(0), current_el(0), next_el(0), last_direction('s')
+	buffsz(Qsize), buff(0), current_el(0), next_el(0), last_direction(Direction::NA)
 {
 	if(Qsize) create_buff(buff, Qsize, fill);
 }
@@ -40,19 +40,19 @@ bool Elevq::setNext(const ELTYPE& el)
 	ELTYPE* found_el = find(el);
 	if(!found_el) return false;
 	next_el = found_el;
-	return true
+	return true;
 }
 
 // ----------------------------------------------------------------------
 
 void Elevq::update_direction()
 {
-  last_direction = 's'; 
+  last_direction = Direction::STOP; 
   if(!current_el || !next_el || *next_el == ZEROVAL) return;
   
   long d = current_el - *next_el;  
-  if(d>0) last_direction = 'd';
-  else if(d<0) last_direction = 'u';
+  if(d>0) last_direction = Direction::DOWN;
+  else if(d<0) last_direction = Direction::UP;
 }
 
 // ----------------------------------------------------------------------
@@ -94,7 +94,11 @@ bool Elevq::set(const ELTYPE& el, const ELTYPE& value)
 
 void Elevq::clear(const ELTYPE& value)
 {
-  if(buff && buffsz) for(ELTYPE* p=buff; p<(buff+buffsz); ++p) *p = value;
+  if(buff && buffsz) {
+    for(ELTYPE* p=buff; p<(buff+buffsz); ++p) *p = value;
+    next_el = 0;
+    last_direction = Direction::STOP;
+  }
 }
 
 // ----------------------------------------------------------------------
@@ -102,11 +106,14 @@ void Elevq::clear(const ELTYPE& value)
 bool Elevq::advance()
 {
 	if(!buff) return false;
-	if(!current_el) current_el = buff;
-	*current_el = ZEROVAL;
+	if(!current_el) current_el = buff[0];
+  if(!next_el) next_el = buff;
+  
+	*next_el = ZEROVAL;
 	resort();
-	next_el = buff;
-	return last_direction != 's';
+  next_el = buff;
+  	
+	return *next_el != ZEROVAL;
 }
 
 // ----------------------------------------------------------------------

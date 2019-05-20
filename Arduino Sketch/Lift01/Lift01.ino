@@ -5,6 +5,8 @@
 #include <L293.h>
 #include <LiquidCrystal.h>
 #include <EasyButton.h>
+#include <AnalogMultiButton.h>
+#include <NewPing.h>
 #include <SPI.h>
 
 //**************************************************
@@ -20,11 +22,10 @@
 #define FLOOR_POSITION_ERROR 5        // погрешность позиции кабины для определения этажа (в шагах степпера)
 #define DOOR_DELAY 1000               // задержка перед отрытием / после закрытия дверей (в мсек.)
 #define FLOOR_DELAY 5000              // задержка перед закрытием дверей для выхода / захода пассажиров (в мсек.)
-
 #define DELAY_LCD 500                 // интервал для вывода на экран текущего этажа и направления (мсек.)
-
 #define ELEV_SERVO_ON 120             // угол (0-180) для активации серво-тормоза (определить экспериментально!!!)
 #define ELEV_SERVO_OFF 60             // угол (0-180) для деактивации серво-тормоза (определить экспериментально!!!)
+#define MAX_DISTANCE 100              // макс. корректное расстояние для датчика расстояния (см)
 
 // пины для дисплея
 #define PIN_LCD_RS 49
@@ -56,7 +57,6 @@
 // пины для подключения к шлейфу кабины лифта
 #define PIN_ELEV_SERVO A2             // сигнал на сервопривод на кабине лифта (для тормоза)
 #define PIN_ELEV_LED 23               // сигнал на светодиод в кабине лифта (через NPN транзистор)
-#define PIN_ELEV_BTN A1               // сигнал от кнопок в кабине лифта
 // пины прерываний
 #define PIN_INT_FL1 18
 #define PIN_INT_FL2 19
@@ -69,9 +69,13 @@
 #define PIN_SD_CS 27
 // аудиосигнал на усилитель
 #define PIN_AUDIO A3
-
+// пины дальномера HC-SR04
+#define PIN_US_ECHO 31
+#define PIN_US_TRIG 33
+// пины для сигнала от кнопок вызова лифта
+#define PIN_FLOOR_BTN A0              // сигнал от кнопок на "этажах" (в маш. зале)
+#define PIN_ELEV_BTN A1               // сигнал от кнопок в кабине лифта
 // прочие
-#define PIN_FLOOR_BTN A0
 #define PIN_FN1 36                    // функциональная (программируемая) кнопка 1
 
 //**************************************************
@@ -79,9 +83,16 @@
 using namespace Elevatorns;
 
 //**************************************************
+ 
+byte FLOOR_DOOR_STATES[FLOORS] = {0, 0, 0, 0};
+long FLOOR_POSITIONS[FLOORS] = {1000, 800, 600, 400}; // todo: позиции кабины лифта для привода - изменить при настройке!
+long FLOOR_DISTANCES[FLOORS] = {800, 600, 400, 200};  // todo: значения расстояния от датчика расстояния на дне кабины до дна шахты - изменить 1 раз при настройке!
+const int FLOOR_BTN_SIGNALS_EL[FLOORS] = {800, 900, 1000, 1020};   // todo: ЗНАЧЕНИЯ СОПРОТИВЛЕНИЯ (0...1023) В ПОРЯДКЕ ВОЗРАСТАНИЯ! заполнить 1 раз при настройке! 
+const int FLOOR_BTN_SIGNALS_FL[FLOORS] = {800, 900, 1000, 1020};   // todo: ЗНАЧЕНИЯ СОПРОТИВЛЕНИЯ (0...1023) В ПОРЯДКЕ ВОЗРАСТАНИЯ! заполнить 1 раз при настройке!
 
+L293 FLOOR_MOTORS[FLOORS] = { L293(PIN_MOTOR_FL_EN, PIN_MOTOR_FL1_FWD, PIN_MOTOR_FL1_BK), L293(PIN_MOTOR_FL_EN, PIN_MOTOR_FL2_FWD, PIN_MOTOR_FL2_BK),
+                              L293(PIN_MOTOR_FL_EN, PIN_MOTOR_FL3_FWD, PIN_MOTOR_FL3_BK), L293(PIN_MOTOR_FL_EN, PIN_MOTOR_FL4_FWD, PIN_MOTOR_FL4_BK) };
 LiquidCrystal lcd(PIN_LCD_RS, PIN_LCD_EN, PIN_LCD_DATA4, PIN_LCD_DATA5, PIN_LCD_DATA6, PIN_LCD_DATA7);
-RH_ASK main_radio(2000, PIN_MAIN_RADIO_RX, PIN_MAIN_RADIO_TX, 0, false);
 AccelStepper elev_stepper(AccelStepper::DRIVER, PIN_MAINMOTOR_STEP, PIN_MAINMOTOR_DIR);
 Servo elev_servo;
 bool elev_servo_activated;
@@ -90,6 +101,9 @@ ErrorCode elev_run_result;
 EasyButton btn_elev_up(PIN_MAN_CONTROL_UP, 35, false, false), btn_elev_down(PIN_MAN_CONTROL_DOWN, 35, false, false), 
            btn_doors_open(PIN_MAN_CONTROL_OPEN, 35, false, false), btn_doors_close(PIN_MAN_CONTROL_CLOSE, 35, false, false), btn_fn1(PIN_FN1, 35, false, false);
 TMRpcm audiodrv; 
+NewPing sonar(PIN_US_TRIG, PIN_US_ECHO, MAX_DISTANCE);
+AnalogMultiButton call_btns_el(PIN_ELEV_BTN, FLOORS, FLOOR_BTN_SIGNALS_EL);
+AnalogMultiButton call_btns_fl(PIN_FLOOR_BTN, FLOORS, FLOOR_BTN_SIGNALS_FL);
            
 struct Audiofiles
 {
@@ -105,12 +119,8 @@ struct Lcd_chars
   byte down[8] = {0b01110, 0b01110, 0b01110, 0b01110, 0b11111, 0b11111, 0b01110, 0b00100};
 } LCD_CHARS;
 
-L293 FLOOR_MOTORS[FLOORS] = {L293(PIN_MOTOR_FL_EN, PIN_MOTOR_FL1_FWD, PIN_MOTOR_FL1_BK), L293(PIN_MOTOR_FL_EN, PIN_MOTOR_FL2_FWD, PIN_MOTOR_FL2_BK),
-  L293(PIN_MOTOR_FL_EN, PIN_MOTOR_FL3_FWD, PIN_MOTOR_FL3_BK), L293(PIN_MOTOR_FL_EN, PIN_MOTOR_FL4_FWD, PIN_MOTOR_FL4_BK) };
-byte FLOOR_DOOR_STATES[FLOORS] = {0, 0, 0, 0};
-
-long FLOOR_POSITIONS[FLOORS] = {1000, 800, 600, 400}; // позиции кабины лифта для привода - изменить при настройке!
 unsigned long counter1 = 0;
+volatile uint8_t us_distance = 0;
 
 //**************************************************
 
@@ -135,6 +145,13 @@ void init_pins()
   btn_doors_open.begin();
   btn_doors_close.begin();
   btn_fn1.begin();
+}
+
+void lcd_print(const char* what, bool clearlcd=true, int col=0, int row=0)
+{
+  if(clearlcd) lcd.clear();  
+  lcd.setCursor(col, row); 
+  lcd.print(what);
 }
 
 void lcd_show(const Direction dir, long figure)
@@ -220,12 +237,21 @@ void elev_brake_control(const bool brake_activate)
   elev_servo_activated = brake_activate;
 }
 
-void elev_assign_floor_positions(Elevator* elevator)
+void elev_update_queue(Elevator* elevator)
 {
-  // assign floor positions (in steps) to elevator
-  for(uint8_t i=0; i<FLOORS; i++) {
-    elevator->set_floor_position(i+1, FLOOR_POSITIONS[i]);
+  // check pressed floor buttons and add to queue
+  call_btns_el.update();
+  call_btns_fl.update();
+
+  for(int i=0; i<FLOORS; i++) {    
+    if(call_btns_el.onRelease(i)) elevator->add_target(i+1);
+    if(call_btns_fl.onRelease(i)) elevator->add_target(i+1);    
   }
+}
+
+void elev_update_distance()
+{
+  us_distance = sonar.ping_cm();
 }
 
 void stop_motor1()
@@ -303,6 +329,9 @@ bool on_elev_run(Elevator* elevator)
   
   // снять тормоз лифта если стоит
   if(elev_servo_activated) elev_brake_control(false);
+
+  // добавить вызванные этажи
+  elev_update_queue(elevator);
   
   if(counter1 == 0) counter1 = millis();
   unsigned long m = millis();
@@ -327,7 +356,7 @@ bool on_elev_up_run(Elevator* elevator)
   //--- СОБЫТИЕ НАСТУПАЕТ РЕГУЛЯРНО ПРИ ДВИЖЕНИИ ЛИФТА ВВЕРХ В РУЧНОМ РЕЖИМЕ (КАЖДЫЙ 1 ШАГ МОТОРА) ---//
   
   // снять тормоз лифта если стоит
-  if(elev_servo_activated) elev_brake_control(false)
+  if(elev_servo_activated) elev_brake_control(false);
   
   if(counter1 == 0) counter1 = millis();
   unsigned long m = millis();
@@ -362,14 +391,14 @@ bool on_elev_down_run(Elevator* elevator)
   //--- СОБЫТИЕ НАСТУПАЕТ РЕГУЛЯРНО ПРИ ДВИЖЕНИИ ЛИФТА ВНИЗ В РУЧНОМ РЕЖИМЕ (КАЖДЫЙ 1 ШАГ МОТОРА) ---//
   
   // снять тормоз лифта если стоит
-  if(elev_servo_activated) elev_brake_control(false)
+  if(elev_servo_activated) elev_brake_control(false);
   
   if(counter1 == 0) counter1 = millis();
   unsigned long m = millis();
   if((m - counter1) >= DELAY_LCD) {
     Elevatorns::Direction _dir = elevator->current_direction();
     long _pos = elevator->current_pos(); 
-    lcd_show_floor(_dir, _floor);
+    lcd_show(_dir, _pos);
     #ifdef DEBUG_OUTPUT_ON
     Serial.print("[MANUAL] "); Serial.print(Elevator::Direction_2str(_dir)); Serial.print(": ");
     Serial.println(_pos);
@@ -386,7 +415,9 @@ void on_elev_arrive(Elevator* elevator, const uint8_t _floor)
   // лифт на тормоз
   elev_brake_control(true);
   // сообщить о прибытии на этаж
-  audio_control(_floor);   
+  audio_control(_floor); 
+  // убрать из очереди текущий этаж
+  // todo: dq_floor(_floor);  
   // открыть дверь (сразу если нажата кнопка ручного открытия)
   btn_doors_open.read();
   elevator->open_door(btn_doors_open.wasPressed());
@@ -394,7 +425,7 @@ void on_elev_arrive(Elevator* elevator, const uint8_t _floor)
   btn_doors_close.read();
   if(!btn_doors_close.wasPressed()) delay(FLOOR_DELAY);
   // закрыть дверь
-  elevator->close_door();
+  elevator->close_door(false);
 }
 
 void on_elev_start_next(Elevator* elevator, const uint8_t _floor)
@@ -435,7 +466,7 @@ void setup()
 
   btn_fn1.onPressed(stepper_reset_position);
 
-  elev_assign_floor_positions(&elevator);
+  elevator.set_floor_positions(FLOOR_POSITIONS);
   elevator.set_door_delay(DOOR_DELAY);
   elevator.set_floor_delay(FLOOR_DELAY);
 
@@ -454,7 +485,10 @@ void loop()
   btn_fn1.read();
 
   elev_run_result = elevator.run();
+  
   if(elev_run_result == ErrorCode::E_NO_DRIVER) {
+    lcd_print("NO ELEV DRIVER!");    
+    delay(1000);
     return;
   }
   
@@ -477,6 +511,7 @@ void loop()
 
     case Mode::OFF:
       elev_led_control(false);
+      lcd_print("OFF");
       break;
   }
 }
