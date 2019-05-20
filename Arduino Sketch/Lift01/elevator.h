@@ -91,7 +91,8 @@ public:
 	Elevator(uint8_t floors, AccelStepper* elev_motor_driver, const ElevatorEvents& events=ElevatorEvents());
 	~Elevator() { freemem(); }
 
-  ErrorCode move_to();                             // move to next floor in queue
+  ErrorCode move(const long steps, ElevatorEvent on_run, ElevatorEvent on_stop); // move N steps in either direction -- BLOCKING! ONLY IN MANUAL MODE
+  ErrorCode move_to();                              // move to next floor in queue
 	ErrorCode move_to(uint8_t target_floor);			    // move to specified floor
 	ErrorCode move_to(float abs_position, ElevatorEvent on_run, ElevatorEvent on_stop);			   // move to absolute position in manual mode (see abs_position()) -- BLOCKING! ONLY IN MANUAL MODE
   ErrorCode move_up(ElevatorEvent on_run, ElevatorEvent on_stop);            // move upwards -- BLOCKING! ONLY IN MANUAL MODE
@@ -146,6 +147,7 @@ public:
     // check idle status
   const bool has_work() { return floors_to_visit() > 0; }
   const bool is_running() { return _is_running; } 
+  const bool suspended() { return _suspended; }
 	
 protected:
 	AccelStepper* _motor;                       // not owned!!! don't free from this class objects
@@ -160,8 +162,7 @@ protected:
   long _floor_delay;
 	long* _floor_positions;                     // reference floor positions (e.g. in motor steps)
   volatile bool _suspended;
-  ErrorCode move(const long steps, ElevatorEvent on_run, ElevatorEvent on_stop); // move N steps in either direction -- BLOCKING! ONLY IN MANUAL MODE
-
+  
   inline void freemem() 
   { 
     if(_floorq) { _floorq->~Elevq(); free(_floorq); _floorq = 0; } 

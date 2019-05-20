@@ -156,9 +156,7 @@ ErrorCode Elevator::move(const long steps, ElevatorEvent on_run, ElevatorEvent o
   
   while(_motor->runSpeed() && !_suspended) {
     _floor_position = _motor->currentPosition();
-    if(on_run) {      
-      if(!on_run(this)) break;
-    }
+    if(on_run && !on_run(this)) break;
     //delay(Elevator::STEP_DELAY);
   }
   
@@ -214,6 +212,8 @@ ErrorCode Elevator::run()
   if(!_motor) return ErrorCode::E_NO_DRIVER;
   if(_mode != Mode::AUTO) return ErrorCode::E_WRONG_MODE;
   if(!_floorq) return ErrorCode::E_UNKNOWN;
+
+  update_current_floor();
   
   bool running = false;
   ErrorCode move_result;

@@ -45,7 +45,7 @@ public:
 	bool advance();
 	bool has(const ELTYPE& el) { return find(el); }
 	ELTYPE* find(const ELTYPE& el);
-  const Direction getDirection() { return last_direction; }
+  const Direction getDirection() { update_direction(); return last_direction; }
   void setDirection(const Direction& _dir) { last_direction = _dir; }       // use at own discretion!
   void update_direction();
   void clear(const ELTYPE& value=ZEROVAL); 
